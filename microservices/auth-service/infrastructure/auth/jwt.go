@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -65,7 +66,6 @@ func (ja *JWTAuth) ValidateToken(tokenString string) (*CustomClaims, error) {
 	return nil, err
 }
 
-// Add refresh token handling
 func (ja *JWTAuth) GenerateRefreshToken() (string, error) {
 	refreshClaims := jwt.RegisteredClaims{
 		ExpiresAt: jwt.NewNumericDate(time.Now().Add(refreshTokenExpiry)),
@@ -78,15 +78,36 @@ func (ja *JWTAuth) GenerateRefreshToken() (string, error) {
 
 func (ja *JWTAuth) ValidateRefreshToken(tokenString string) (*jwt.RegisteredClaims, error) {
 	token, err := jwt.ParseWithClaims(tokenString, &jwt.RegisteredClaims{}, func(token *jwt.Token) (interface{}, error) {
+		// Pastikan metode signing benar
+		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+		}
 		return []byte(ja.secret), nil
 	})
+
+	if err != nil {
+		return nil, err
+	}
 
 	if claims, ok := token.Claims.(*jwt.RegisteredClaims); ok && token.Valid {
 		return claims, nil
 	}
-	return nil, err
+
+	return nil, fmt.Errorf("invalid token")
 }
 
 func (ja *JWTAuth) RotateTokens(userID, role string) (string, string, error) {
-	return ja.GenerateTokens(userID, role)
+	// Generate new access token
+	accessToken, err := ja.GenerateAccessToken(userID, role)
+	if err != nil {
+		return "", "", err
+	}
+
+	// Generate new refresh token
+	refreshToken, err := ja.GenerateRefreshToken()
+	if err != nil {
+		return "", "", err
+	}
+
+	return accessToken, refreshToken, nil
 }

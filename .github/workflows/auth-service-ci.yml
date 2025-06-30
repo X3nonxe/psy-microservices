@@ -6,7 +6,7 @@ on:
     paths:
       - 'microservices/auth-service/**'
   pull_request:
-    branches: [psychology-migration]
+    branches: ['psychology-migration']
 
 jobs:
   build-test:

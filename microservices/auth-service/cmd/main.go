@@ -46,7 +46,7 @@ func main() {
 	// Dependency injection
 	userRepo := persistence.NewPostgresUserRepository(db)
 	tokenRepo := persistence.NewRedisTokenRepository(redisClient)
-	authUC := usecases.NewAuthUseCase(userRepo, tokenRepo, cfg.JWTSecret)
+	authUC := usecases.NewAuthUseCase(userRepo, tokenRepo, cfg.JWTSecret, zap.L())
 
 	// Start gRPC server
 	lis, err := net.Listen("tcp", ":"+cfg.GRPCPort)
@@ -62,7 +62,7 @@ func main() {
 	)
 	v1.RegisterAuthServiceServer(s, rpc.NewAuthHandler(authUC))
 
-	healthHandler := rpc.NewHealthHandler(db)
+	healthHandler := rpc.NewHealthHandler(db, *tokenRepo)
 	grpc_health_v1.RegisterHealthServer(s, healthHandler)
 
 	reflection.Register(s)

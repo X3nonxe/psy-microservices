@@ -2,6 +2,7 @@ package usecases_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -10,6 +11,7 @@ import (
 
 	"microservices/auth-service/application/usecases"
 	"microservices/auth-service/domain/entities"
+	"microservices/auth-service/infrastructure/auth"
 )
 
 type MockUserRepository struct {
@@ -41,7 +43,6 @@ func (m *MockTokenRepository) GetUserIDByTokenID(ctx context.Context, tokenID st
 	return args.String(0), args.Error(1)
 }
 
-// Implementasi UserRepository
 func (m *MockUserRepository) CreateUser(ctx context.Context, user *entities.User) error {
 	args := m.Called(ctx, user)
 	return args.Error(0)
@@ -67,7 +68,7 @@ func TestAuthUseCase_Register_Success(t *testing.T) {
 	// Setup
 	mockUserRepo := new(MockUserRepository)
 	mockTokenRepo := new(MockTokenRepository)
-	authUC := usecases.NewAuthUseCase(mockUserRepo, mockTokenRepo, "test-secret")
+	authUC := usecases.NewAuthUseCase(mockUserRepo, mockTokenRepo, "test-secret", nil)
 
 	// Mock expectations
 	mockUserRepo.On("FindByEmail", mock.Anything, "test@example.com").Return((*entities.User)(nil), nil)
@@ -88,7 +89,7 @@ func TestAuthUseCase_Login_InvalidCredentials(t *testing.T) {
 	// Setup
 	mockUserRepo := new(MockUserRepository)
 	mockTokenRepo := new(MockTokenRepository)
-	authUC := usecases.NewAuthUseCase(mockUserRepo, mockTokenRepo, "test-secret")
+	authUC := usecases.NewAuthUseCase(mockUserRepo, mockTokenRepo, "test-secret", nil)
 
 	// Mock: User exists but wrong password
 	existingUser := &entities.User{
@@ -111,7 +112,7 @@ func TestAuthUseCase_Login_InvalidCredentials(t *testing.T) {
 func TestAuthUseCase_Register_EmailExists(t *testing.T) {
 	mockUserRepo := new(MockUserRepository)
 	mockTokenRepo := new(MockTokenRepository)
-	authUC := usecases.NewAuthUseCase(mockUserRepo, mockTokenRepo, "test-secret")
+	authUC := usecases.NewAuthUseCase(mockUserRepo, mockTokenRepo, "test-secret", nil)
 
 	existingUser := &entities.User{
 		ID:    "user-123",
@@ -129,7 +130,7 @@ func TestAuthUseCase_Register_EmailExists(t *testing.T) {
 func TestAuthUseCase_Login_WrongPassword(t *testing.T) {
 	mockUserRepo := new(MockUserRepository)
 	mockTokenRepo := new(MockTokenRepository)
-	authUC := usecases.NewAuthUseCase(mockUserRepo, mockTokenRepo, "test-secret")
+	authUC := usecases.NewAuthUseCase(mockUserRepo, mockTokenRepo, "test-secret", nil)
 
 	// Gunakan hash password yang valid
 	validHash := "$argon2id$v=19$m=65536,t=1,p=4$c2FsdHNhbHRzYWx0$Df7G0CbGqD8N0mF8eH0wZg0bWY0bWY0bWY0bWY0bWY0"
@@ -152,33 +153,153 @@ func TestAuthUseCase_RefreshToken_Success(t *testing.T) {
 	// Setup
 	mockUserRepo := new(MockUserRepository)
 	mockTokenRepo := new(MockTokenRepository)
-	authUC := usecases.NewAuthUseCase(mockUserRepo, mockTokenRepo, "test-secret")
+	authUC := usecases.NewAuthUseCase(mockUserRepo, mockTokenRepo, "test-secret", nil)
 
-	// Mock data
-	refreshToken := "valid.refresh.token"
-	tokenID := "token-id-123"
+	// User data
 	userID := "user-123"
-
-	// Mock expectations
-	mockTokenRepo.On("IsTokenRevoked", mock.Anything, tokenID).Return(false)
-	mockTokenRepo.On("GetUserIDByTokenID", mock.Anything, tokenID).Return(userID, nil)
-
 	user := &entities.User{
 		ID:    userID,
-		Email: "user@example.com",
+		Email: "test@example.com",
 		Role:  entities.ClientRole,
 	}
+
+	// Generate valid refresh token
+	jwtAuth := auth.NewJWTAuth("test-secret")
+	refreshToken, err := jwtAuth.GenerateRefreshToken()
+	assert.NoError(t, err)
+
+	// Parse token to get claims
+	claims, err := jwtAuth.ValidateRefreshToken(refreshToken)
+	assert.NoError(t, err)
+
+	// Mock expectations
+	mockTokenRepo.On("GetUserIDByTokenID", mock.Anything, claims.ID).Return(userID, nil)
+	mockTokenRepo.On("IsTokenRevoked", mock.Anything, claims.ID).Return(false)
 	mockUserRepo.On("FindByID", mock.Anything, userID).Return(user, nil)
-	mockTokenRepo.On("RevokeToken", mock.Anything, tokenID).Return(nil)
-	mockTokenRepo.On("StoreToken", mock.Anything, mock.Anything, userID).Return(nil)
+	mockTokenRepo.On("RevokeToken", mock.Anything, claims.ID).Return(nil)
+
+	// Gunakan mock.Anything untuk token ID baru karena nilainya acak
+	mockTokenRepo.On("StoreToken", mock.Anything, mock.AnythingOfType("string"), userID).Return(nil)
 
 	// Execute
-	newAccess, newRefresh, err := authUC.RefreshToken(context.Background(), refreshToken)
+	accessToken, newRefreshToken, err := authUC.RefreshToken(context.Background(), refreshToken)
 
 	// Assert
 	assert.NoError(t, err)
-	assert.NotEmpty(t, newAccess)
-	assert.NotEmpty(t, newRefresh)
+	assert.NotEmpty(t, accessToken)
+	assert.NotEmpty(t, newRefreshToken)
+
 	mockTokenRepo.AssertExpectations(t)
 	mockUserRepo.AssertExpectations(t)
+}
+
+func TestAuthUseCase_RefreshToken_Revoked(t *testing.T) {
+	// Setup
+	mockUserRepo := new(MockUserRepository)
+	mockTokenRepo := new(MockTokenRepository)
+	authUC := usecases.NewAuthUseCase(mockUserRepo, mockTokenRepo, "test-secret", nil)
+
+	// Generate valid refresh token
+	jwtAuth := auth.NewJWTAuth("test-secret")
+	refreshToken, err := jwtAuth.GenerateRefreshToken()
+	assert.NoError(t, err)
+
+	// Parse token to get claims
+	claims, err := jwtAuth.ValidateRefreshToken(refreshToken)
+	assert.NoError(t, err)
+
+	// Mock expectations
+	userID := "user-123"
+
+	// Mock GetUserIDByTokenID untuk mengembalikan userID
+	mockTokenRepo.On("GetUserIDByTokenID", mock.Anything, claims.ID).Return(userID, nil)
+
+	// Mock IsTokenRevoked untuk mengembalikan true (token dicabut)
+	mockTokenRepo.On("IsTokenRevoked", mock.Anything, claims.ID).Return(true)
+
+	// Execute
+	_, _, err = authUC.RefreshToken(context.Background(), refreshToken)
+
+	// Assert
+	assert.Error(t, err)
+	assert.Equal(t, entities.ErrTokenRevoked, err)
+
+	// Pastikan hanya GetUserIDByTokenID dan IsTokenRevoked yang dipanggil
+	mockTokenRepo.AssertCalled(t, "GetUserIDByTokenID", mock.Anything, claims.ID)
+	mockTokenRepo.AssertCalled(t, "IsTokenRevoked", mock.Anything, claims.ID)
+
+	// Pastikan fungsi lainnya tidak dipanggil
+	mockUserRepo.AssertNotCalled(t, "FindByID")
+	mockTokenRepo.AssertNotCalled(t, "RevokeToken")
+	mockTokenRepo.AssertNotCalled(t, "StoreToken")
+}
+
+func TestAuthUseCase_Logout_Success(t *testing.T) {
+	mockUserRepo := new(MockUserRepository)
+	mockTokenRepo := new(MockTokenRepository)
+	authUC := usecases.NewAuthUseCase(mockUserRepo, mockTokenRepo, "test-secret", nil)
+
+	// Generate valid refresh token
+	jwtAuth := auth.NewJWTAuth("test-secret")
+	refreshToken, err := jwtAuth.GenerateRefreshToken()
+	assert.NoError(t, err)
+
+	// Parse token to get claims
+	claims, err := jwtAuth.ValidateRefreshToken(refreshToken)
+	assert.NoError(t, err)
+
+	// Mock expectations
+	mockTokenRepo.On("RevokeToken", mock.Anything, claims.ID).Return(nil)
+
+	err = authUC.Logout(context.Background(), refreshToken)
+
+	assert.NoError(t, err)
+	mockTokenRepo.AssertExpectations(t)
+}
+
+func TestAuthUseCase_Logout_InvalidToken(t *testing.T) {
+	mockUserRepo := new(MockUserRepository)
+	mockTokenRepo := new(MockTokenRepository)
+	authUC := usecases.NewAuthUseCase(mockUserRepo, mockTokenRepo, "test-secret", nil)
+
+	err := authUC.Logout(context.Background(), "invalid-token")
+
+	assert.Error(t, err)
+	assert.Equal(t, entities.ErrInvalidToken, err)
+}
+
+func TestAuthUseCase_RefreshToken_InvalidToken(t *testing.T) {
+	mockUserRepo := new(MockUserRepository)
+	mockTokenRepo := new(MockTokenRepository)
+	authUC := usecases.NewAuthUseCase(mockUserRepo, mockTokenRepo, "test-secret", nil)
+
+	_, _, err := authUC.RefreshToken(context.Background(), "invalid-token")
+
+	assert.Error(t, err)
+	assert.Equal(t, entities.ErrInvalidToken, err)
+}
+
+func TestAuthUseCase_RefreshToken_UserNotFound(t *testing.T) {
+	mockUserRepo := new(MockUserRepository)
+	mockTokenRepo := new(MockTokenRepository)
+	authUC := usecases.NewAuthUseCase(mockUserRepo, mockTokenRepo, "test-secret", nil)
+
+	// Generate valid refresh token
+	jwtAuth := auth.NewJWTAuth("test-secret")
+	refreshToken, err := jwtAuth.GenerateRefreshToken()
+	assert.NoError(t, err)
+
+	// Parse token to get claims
+	claims, err := jwtAuth.ValidateRefreshToken(refreshToken)
+	assert.NoError(t, err)
+
+	// Mock expectations
+	mockTokenRepo.On("GetUserIDByTokenID", mock.Anything, claims.ID).Return("invalid-user-id", nil)
+	mockTokenRepo.On("IsTokenRevoked", mock.Anything, claims.ID).Return(false)
+	mockUserRepo.On("FindByID", mock.Anything, "invalid-user-id").Return(nil, errors.New("not found"))
+
+	_, _, err = authUC.RefreshToken(context.Background(), refreshToken)
+
+	assert.Error(t, err)
+	assert.Equal(t, entities.ErrUserNotFound, err)
 }

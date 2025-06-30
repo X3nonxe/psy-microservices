@@ -6,6 +6,7 @@ import (
 
 	"github.com/go-redis/redis/v8"
 )
+
 type RedisTokenRepository struct {
 	client *redis.Client
 	prefix string
@@ -37,4 +38,9 @@ func (r *RedisTokenRepository) RevokeToken(ctx context.Context, tokenID string) 
 // Fungsi baru untuk mendapatkan UserID berdasarkan TokenID
 func (r *RedisTokenRepository) GetUserIDByTokenID(ctx context.Context, tokenID string) (string, error) {
 	return r.client.Get(ctx, r.prefix+tokenID).Result()
+}
+
+func (r *RedisTokenRepository) CheckHealth(ctx context.Context) error {
+	_, err := r.client.Ping(ctx).Result()
+	return err
 }

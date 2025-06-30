@@ -7,19 +7,22 @@ import (
 	"microservices/auth-service/domain/repositories"
 	"microservices/auth-service/infrastructure/auth"
 	"time"
+
+	"go.uber.org/zap"
 )
 
 type AuthUseCase struct {
 	userRepo  repositories.UserRepository
 	tokenRepo repositories.TokenRepository
 	jwtAuth   *auth.JWTAuth
+	logger    *zap.Logger
 }
-
-func NewAuthUseCase(userRepo repositories.UserRepository, tokenRepo repositories.TokenRepository, jwtSecret string) *AuthUseCase {
+func NewAuthUseCase(userRepo repositories.UserRepository, tokenRepo repositories.TokenRepository, jwtSecret string, logger *zap.Logger) *AuthUseCase {
 	return &AuthUseCase{
 		userRepo:  userRepo,
 		tokenRepo: tokenRepo,
 		jwtAuth:   auth.NewJWTAuth(jwtSecret),
+		logger:    logger,
 	}
 }
 
@@ -84,38 +87,44 @@ func (uc *AuthUseCase) RefreshToken(ctx context.Context, refreshToken string) (s
 		return "", "", entities.ErrInvalidToken
 	}
 
+	// Dapatkan userID dari token repository
+	userID, err := uc.tokenRepo.GetUserIDByTokenID(ctx, claims.ID)
+	if err != nil {
+		return "", "", entities.ErrInvalidToken
+	}
+
+	// Periksa apakah token revoked
 	if uc.tokenRepo.IsTokenRevoked(ctx, claims.ID) {
 		return "", "", entities.ErrTokenRevoked
 	}
 
-	// Dapatkan user dari token repository
-	userID, err := uc.tokenRepo.GetUserIDByTokenID(ctx, claims.ID)
-	if err != nil {
-		return "", "", entities.ErrUserNotFound
-	}
-
+	// Dapatkan user
 	user, err := uc.userRepo.FindByID(ctx, userID)
 	if err != nil || user == nil {
 		return "", "", entities.ErrUserNotFound
 	}
 
-	// Generate token baru
-	newAccessToken, newRefreshToken, err := uc.jwtAuth.GenerateTokens(user.ID, string(user.Role))
+	// Generate new tokens
+	newAccessToken, newRefreshToken, err := uc.jwtAuth.RotateTokens(user.ID, string(user.Role))
 	if err != nil {
 		return "", "", err
 	}
 
-	// Revoke token lama
-	if err := uc.tokenRepo.RevokeToken(ctx, claims.ID); err != nil {
-		log.Printf("failed to revoke token: %v", err)
+	// Parse new refresh token claims
+	newRefreshClaims, err := uc.jwtAuth.ValidateRefreshToken(newRefreshToken)
+	if err != nil {
+		return "", "", err
 	}
 
-	// Simpan token baru
-	newRefreshClaims, err := uc.jwtAuth.ValidateRefreshToken(newRefreshToken)
-	if err == nil {
-		if err := uc.tokenRepo.StoreToken(ctx, newRefreshClaims.ID, user.ID); err != nil {
-			log.Printf("failed to store new token: %v", err)
-		}
+	// Revoke old refresh token
+	if err := uc.tokenRepo.RevokeToken(ctx, claims.ID); err != nil {
+		uc.logger.Error("failed to revoke token", zap.Error(err))
+	}
+
+	// Store new refresh token
+	if err := uc.tokenRepo.StoreToken(ctx, newRefreshClaims.ID, user.ID); err != nil {
+		uc.logger.Error("failed to store new refresh token", zap.Error(err))
+		return "", "", err
 	}
 
 	return newAccessToken, newRefreshToken, nil
