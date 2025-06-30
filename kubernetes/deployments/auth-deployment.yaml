@@ -15,7 +15,7 @@ spec:
     spec:
       containers:
         - name: auth
-          image: your-registry/auth-service:v1.0.0
+          image: ${{ secrets.DOCKERHUB_USERNAME }}/auth-service:staging-latest
           ports:
             - containerPort: 50051
           env:
@@ -35,3 +35,5 @@ spec:
             limits:
               memory: '128Mi'
               cpu: '100m'
+      imagePullSecrets:
+        - name: dockerhub-creds

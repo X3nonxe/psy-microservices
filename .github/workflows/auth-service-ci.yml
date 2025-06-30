@@ -65,13 +65,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4 # Update ke versi terbaru
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v2
+        uses: docker/setup-buildx-action@v3 # Versi terbaru
 
       - name: Login to Docker Hub
-        uses: docker/login-action@v2
+        uses: docker/login-action@v3 # Versi terbaru
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
@@ -82,11 +82,28 @@ jobs:
           docker build -t ${{ secrets.DOCKERHUB_USERNAME }}/auth-service:${{ github.sha }} .
           docker push ${{ secrets.DOCKERHUB_USERNAME }}/auth-service:${{ github.sha }}
 
-      - name: Deploy to Kubernetes
-        uses: steebchen/kubectl@v2.0.0
+          # Tambahkan tag latest untuk staging
+          docker tag ${{ secrets.DOCKERHUB_USERNAME }}/auth-service:${{ github.sha }} ${{ secrets.DOCKERHUB_USERNAME }}/auth-service:staging-latest
+          docker push ${{ secrets.DOCKERHUB_USERNAME }}/auth-service:staging-latest
+
+      - name: Setup Kubernetes
+        uses: azure/setup-kubectl@v3 # Lebih stabil
         with:
-          command: apply -f kubernetes/
-          kubectl-version: v1.25.0
-        env:
-          KUBE_CONFIG_DATA: ${{ secrets.KUBE_CONFIG_DATA_STAGING }}
-          IMAGE_TAG: ${{ github.sha }}
+          version: 'v1.28.0' # Sesuaikan dengan versi cluster
+
+      - name: Deploy to Kubernetes
+        run: |
+          # Buat kubeconfig dari secret
+          mkdir -p ~/.kube
+          echo "${{ secrets.KUBE_CONFIG_DATA_STAGING }}" > ~/.kube/config
+
+          # Update image di deployment
+          kubectl set image deployment/auth-service auth-service=${{ secrets.DOCKERHUB_USERNAME }}/auth-service:${{ github.sha }} -n psychology-app --record
+
+          # Verifikasi deployment
+          kubectl rollout status deployment/auth-service -n psychology-app
+
+      - name: Verify Docker image
+        run: |
+          docker run --rm ${{ secrets.DOCKERHUB_USERNAME }}/auth-service:${{ github.sha }} \
+          /auth-service -version
