@@ -1,0 +1,10 @@
+# microservices/auth-service/.dockerignore
+**/.git
+**/node_modules
+**/*.log
+**/coverage.out
+**/*.md
+**/Dockerfile
+**/.dockerignore
+**/bin
+**/tmp

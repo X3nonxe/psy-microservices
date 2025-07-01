@@ -1,0 +1,110 @@
+name: Auth Service CI/CD
+
+on:
+  push:
+    branches: [psychology-migration]
+    paths:
+      - 'microservices/auth-service/**'
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_DB: testdb
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Go
+        uses: actions/setup-go@v3
+        with:
+          go-version: '1.21'
+
+      - name: Build
+        working-directory: microservices/auth-service
+        run: go build -v ./...
+
+      - name: Run unit tests
+        working-directory: microservices/auth-service
+        run: go test -v -coverprofile=coverage.out -short ./...
+
+      - name: Run integration tests
+        working-directory: microservices/auth-service
+        run: go test -v -tags=integration ./...
+        env:
+          AUTH_DB_URL: 'postgres://test:test@localhost:5432/testdb?sslmode=disable'
+          REDIS_URL: 'redis://localhost:6379/0'
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v3
+        with:
+          file: microservices/auth-service/coverage.out
+
+  deploy-staging:
+    needs: build-test
+    if: ${{ always() && needs.build-test.result == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up KinD cluster
+        uses: helm/kind-action@v1.8.0
+        with:
+          version: 'v0.20.0'
+          config: |
+            kind: Cluster
+            apiVersion: kind.x-k8s.io/v1alpha4
+            nodes:
+            - role: control-plane
+              extraPortMappings:
+              - containerPort: 50051
+                hostPort: 50051
+                protocol: TCP
+
+      - name: Build Docker image
+        working-directory: microservices/auth-service
+        run: docker build -t auth-service:${{ github.sha }} .
+
+      - name: Load image into KinD cluster
+        run: kind load docker-image auth-service:${{ github.sha }}
+
+      - name: Deploy database
+        run: |
+          kubectl create namespace psychology-app
+          kubectl apply -f microservices/auth-service/kubernetes/db-deployment.yaml
+          kubectl wait --for=condition=ready pod -l app=db-service -n psychology-app --timeout=120s
+
+      - name: Deploy auth service
+        run: |
+          kubectl apply -f microservices/auth-service/kubernetes/auth-deployment.yaml
+          kubectl apply -f microservices/auth-service/kubernetes/auth-service.yaml
+
+          kubectl set image deployment/auth-service \
+            auth-service=auth-service:${{ github.sha }} \
+            -n psychology-app
+            
+          kubectl rollout status deployment/auth-service -n psychology-app --timeout=120s
+
+      - name: Verify deployment
+        run: |
+          kubectl get all -n psychology-app
+          kubectl logs deployment/auth-service -n psychology-app
+          kubectl describe pod -l app=auth-service -n psychology-app

@@ -1,0 +1,69 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: psy-postgres
+    environment:
+      POSTGRES_DB: auth_db
+      POSTGRES_USER: auth_user
+      POSTGRES_PASSWORD: auth_password
+    ports:
+      - '5432:5432'
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U auth_user -d auth_db']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: psy-redis
+    ports:
+      - '6379:6379'
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  migrate:
+    image: migrate/migrate
+    container_name: psy-migrate
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./microservices/auth-service/migrations:/migrations
+    command: -path=/migrations
+      -database=postgres://auth_user:auth_password@postgres:5432/auth_db?sslmode=disable
+      up
+    environment:
+      WAIT_HOSTS: postgres:5432
+      WAIT_TIMEOUT: 30
+
+  auth-service:
+    build:
+      context: ./microservices/auth-service # PERUBAHAN PENTING
+      dockerfile: Dockerfile
+    container_name: auth-service
+    ports:
+      - '50051:50051'
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      AUTH_GRPC_PORT: 50051
+      AUTH_DB_URL: postgres://auth_user:auth_password@postgres:5432/auth_db?sslmode=disable
+      REDIS_URL: redis:6379
+      JWT_SECRET: your_strong_secret_here
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
