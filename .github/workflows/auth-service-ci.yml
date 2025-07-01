@@ -151,8 +151,8 @@ jobs:
       - name: Deploy auth service
         run: |
           # Apply deployment with server-side apply for better error reporting
-          kubectl apply -f kubernetes/deployments/db-deployment.yaml --server-side=true
-          kubectl apply -f kubernetes/services/auth-service.yaml --server-side=true
+          kubectl apply --server-side -f kubernetes/deployments/
+          kubectl apply --server-side -f kubernetes/services/
 
           # Update image
           kubectl set image deployment/auth-service \
