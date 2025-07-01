@@ -108,10 +108,10 @@ jobs:
         run: |
           # List images before load
           docker images
-
+          
           # Load image
           kind load docker-image auth-service:${{ github.sha }}
-
+          
           # Verify loaded images (non-interactive)
           kubectl get nodes -o wide
           docker exec kind-control-plane crictl images || echo "crictl not available, using alternative method"
@@ -121,11 +121,11 @@ jobs:
         run: |
           kubectl create namespace psychology-app || true
           kubectl apply -f microservices/auth-service/kubernetes/db-deployment.yaml
-
+          
           # Wait for database to be ready with better diagnostics
           echo "Waiting for database pod to be ready..."
           kubectl wait --for=condition=ready pod -l app=db-service -n psychology-app --timeout=180s
-
+          
           # Additional diagnostics
           kubectl get pods -n psychology-app -o wide
           kubectl describe pod -l app=db-service -n psychology-app || true
@@ -145,7 +145,7 @@ jobs:
           # Apply auth service
           kubectl apply -f microservices/auth-service/kubernetes/auth-deployment.yaml
           kubectl apply -f microservices/auth-service/kubernetes/auth-service.yaml
-
+          
           # Update image
           kubectl set image deployment/auth-service \
             auth-service=auth-service:${{ github.sha }} \
@@ -165,16 +165,16 @@ jobs:
           kubectl get all -n psychology-app -o wide
           kubectl describe deployment auth-service -n psychology-app
           kubectl get pods -n psychology-app -o wide
-
+          
           # Get logs from auth service
           kubectl logs deployment/auth-service -n psychology-app --tail=100
-
+          
           # Describe auth service pod
           kubectl describe pod -l app=auth-service -n psychology-app
-
+          
           # Get events
           kubectl get events -n psychology-app --sort-by='.metadata.creationTimestamp'
-
+          
           # Test service connectivity
           kubectl run curl-test --image=curlimages/curl -n psychology-app \
             --restart=Never \
