@@ -21,34 +21,29 @@ import (
 )
 
 func main() {
-	// Load config
 	cfg := config.Load()
 	logger := logger.NewLogger("auth-service")
 	defer logger.Sync()
 
 	zap.ReplaceGlobals(logger)
 
-	// Setup database
 	db, err := sql.Open("postgres", cfg.DBURL)
 	if err != nil {
 		zap.L().Fatal("failed to connect to database", zap.Error(err))
 	}
 	defer db.Close()
 
-	// Setup Redis
 	redisClient := redis.NewClient(&redis.Options{
 		Addr:     cfg.RedisURL,
-		Password: "", // no password set
-		DB:       0,  // use default DB
+		Password: "",
+		DB:       0,
 	})
 	defer redisClient.Close()
 
-	// Dependency injection
 	userRepo := persistence.NewPostgresUserRepository(db)
 	tokenRepo := persistence.NewRedisTokenRepository(redisClient)
 	authUC := usecases.NewAuthUseCase(userRepo, tokenRepo, cfg.JWTSecret, zap.L())
 
-	// Start gRPC server
 	lis, err := net.Listen("tcp", ":"+cfg.GRPCPort)
 	if err != nil {
 		zap.L().Fatal("failed to listen", zap.Error(err))
