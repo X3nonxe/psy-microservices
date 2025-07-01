@@ -31,6 +31,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
+        with:
+          fetch-depth: 0 # Penting untuk mendapatkan semua file
 
       - name: Set up Go
         uses: actions/setup-go@v3
@@ -64,47 +66,79 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
 
       - name: Set up KinD cluster
-        uses: helm/kind-action@v1.8.0
-        with:
-          version: 'v0.20.0'
-          config: |
-            kind: Cluster
-            apiVersion: kind.x-k8s.io/v1alpha4
-            nodes:
-            - role: control-plane
-              extraPortMappings:
-              - containerPort: 50051
-                hostPort: 50051
-                protocol: TCP
+        run: |
+          # Install KinD
+          curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.20.0/kind-linux-amd64
+          chmod +x ./kind
+          sudo mv ./kind /usr/local/bin/
+
+          # Install kubectl
+          curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+          chmod +x kubectl
+          sudo mv kubectl /usr/local/bin/
+
+          # Create cluster config file
+          cat <<EOF > kind-config.yaml
+          kind: Cluster
+          apiVersion: kind.x-k8s.io/v1alpha4
+          nodes:
+          - role: control-plane
+            extraPortMappings:
+            - containerPort: 50051
+              hostPort: 50051
+              protocol: TCP
+          EOF
+
+          # Create cluster
+          kind create cluster --config=kind-config.yaml --wait 120s
+
+          # Verify cluster
+          kubectl cluster-info
+          kubectl get nodes
 
       - name: Build Docker image
         working-directory: microservices/auth-service
         run: docker build -t auth-service:${{ github.sha }} .
 
       - name: Load image into KinD cluster
-        run: kind load docker-image auth-service:${{ github.sha }}
+        run: |
+          # List images before load
+          docker images
+
+          # Load image
+          kind load docker-image auth-service:${{ github.sha }}
+
+          # Verify loaded images
+          docker exec -it kind-control-plane crictl images
 
       - name: Deploy database
         run: |
-          kubectl create namespace psychology-app
+          kubectl create namespace psychology-app || true
           kubectl apply -f microservices/auth-service/kubernetes/db-deployment.yaml
-          kubectl wait --for=condition=ready pod -l app=db-service -n psychology-app --timeout=120s
+          kubectl wait --for=condition=ready pod -l app=db-service -n psychology-app --timeout=180s
 
       - name: Deploy auth service
         run: |
+          # Apply deployment and service
           kubectl apply -f microservices/auth-service/kubernetes/auth-deployment.yaml
           kubectl apply -f microservices/auth-service/kubernetes/auth-service.yaml
 
+          # Update image
           kubectl set image deployment/auth-service \
             auth-service=auth-service:${{ github.sha }} \
             -n psychology-app
             
-          kubectl rollout status deployment/auth-service -n psychology-app --timeout=120s
+          # Wait for rollout
+          kubectl rollout status deployment/auth-service -n psychology-app --timeout=180s
 
       - name: Verify deployment
         run: |
           kubectl get all -n psychology-app
+          kubectl get pods -n psychology-app -o wide
           kubectl logs deployment/auth-service -n psychology-app
           kubectl describe pod -l app=auth-service -n psychology-app
+          kubectl get events -n psychology-app --sort-by='.lastTimestamp'
