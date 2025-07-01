@@ -125,7 +125,7 @@ jobs:
 
       - name: Deploy database
         run: |
-          kubectl apply -f microservices/auth-service/kubernetes/deployments/db-deployment.yaml
+          kubectl apply -f kubernetes/deployments/db-deployment.yaml
 
           # Enhanced diagnostics with retries
           for i in {1..10}; do
@@ -151,8 +151,8 @@ jobs:
       - name: Deploy auth service
         run: |
           # Apply deployment with server-side apply for better error reporting
-          kubectl apply -f microservices/auth-service/kubernetes/deployments/auth-deployment.yaml --server-side=true
-          kubectl apply -f microservices/auth-service/kubernetes/services/auth-service.yaml --server-side=true
+          kubectl apply -f kubernetes/deployments/db-deployment.yaml --server-side=true
+          kubectl apply -f kubernetes/services/auth-service.yaml --server-side=true
 
           # Update image
           kubectl set image deployment/auth-service \
