@@ -4,7 +4,7 @@ metadata:
   name: auth-service
   namespace: psychology-app
 spec:
-  replicas: 3
+  replicas: 1
   selector:
     matchLabels:
       app: auth-service
@@ -14,26 +14,24 @@ spec:
         app: auth-service
     spec:
       containers:
-        - name: auth
-          image: ${{ secrets.DOCKERHUB_USERNAME }}/auth-service:staging-latest
+        - name: auth-service
+          image: auth-service:latest
           ports:
             - containerPort: 50051
           env:
             - name: AUTH_GRPC_PORT
               value: '50051'
             - name: JWT_SECRET
-              valueFrom:
-                secretKeyRef:
-                  name: app-secrets
-                  key: jwt-secret
+              value: 'test-secret'
             - name: AUTH_DB_URL
-              valueFrom:
-                secretKeyRef:
-                  name: db-secrets
-                  key: auth-db-url
-          resources:
-            limits:
-              memory: '128Mi'
-              cpu: '100m'
-      imagePullSecrets:
-        - name: dockerhub-creds
+              value: 'postgres://user:pass@db-service.psychology-app.svc.cluster.local:5432/authdb'
+          readinessProbe:
+            grpc:
+              port: 50051
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            grpc:
+              port: 50051
+            initialDelaySeconds: 15
+            periodSeconds: 20
