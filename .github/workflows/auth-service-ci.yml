@@ -32,7 +32,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v3
         with:
-          fetch-depth: 0 # Penting untuk mendapatkan semua file
+          fetch-depth: 0
 
       - name: Set up Go
         uses: actions/setup-go@v3
@@ -112,18 +112,37 @@ jobs:
           # Load image
           kind load docker-image auth-service:${{ github.sha }}
 
-          # Verify loaded images
-          docker exec -it kind-control-plane crictl images
+          # Verify loaded images (non-interactive)
+          kubectl get nodes -o wide
+          docker exec kind-control-plane crictl images || echo "crictl not available, using alternative method"
+          kubectl describe node kind-control-plane | grep -A 10 "Images:"
 
       - name: Deploy database
         run: |
           kubectl create namespace psychology-app || true
           kubectl apply -f microservices/auth-service/kubernetes/db-deployment.yaml
+
+          # Wait for database to be ready with better diagnostics
+          echo "Waiting for database pod to be ready..."
           kubectl wait --for=condition=ready pod -l app=db-service -n psychology-app --timeout=180s
+
+          # Additional diagnostics
+          kubectl get pods -n psychology-app -o wide
+          kubectl describe pod -l app=db-service -n psychology-app || true
+          kubectl logs -l app=db-service -n psychology-app --tail=50 || true
+
+      - name: Verify database connection
+        run: |
+          # Test database connection from within the cluster
+          kubectl run db-test --image=postgres:15-alpine -n psychology-app \
+            --restart=Never \
+            --rm -i \
+            --env="PGPASSWORD=pass" \
+            --command -- sh -c 'until pg_isready -h db-service.psychology-app.svc.cluster.local -U user -d authdb; do sleep 2; done; echo "Database ready!"' || true
 
       - name: Deploy auth service
         run: |
-          # Apply deployment and service
+          # Apply auth service
           kubectl apply -f microservices/auth-service/kubernetes/auth-deployment.yaml
           kubectl apply -f microservices/auth-service/kubernetes/auth-service.yaml
 
@@ -132,13 +151,32 @@ jobs:
             auth-service=auth-service:${{ github.sha }} \
             -n psychology-app
             
-          # Wait for rollout
-          kubectl rollout status deployment/auth-service -n psychology-app --timeout=180s
+          # Wait for rollout with detailed diagnostics
+          echo "Waiting for auth service rollout..."
+          kubectl rollout status deployment/auth-service -n psychology-app --timeout=180s || \
+          (kubectl get pods -n psychology-app -o wide; \
+           kubectl describe deployment auth-service -n psychology-app; \
+           kubectl logs deployment/auth-service -n psychology-app --tail=50; \
+           false)
 
       - name: Verify deployment
         run: |
-          kubectl get all -n psychology-app
+          # Comprehensive verification
+          kubectl get all -n psychology-app -o wide
+          kubectl describe deployment auth-service -n psychology-app
           kubectl get pods -n psychology-app -o wide
-          kubectl logs deployment/auth-service -n psychology-app
+
+          # Get logs from auth service
+          kubectl logs deployment/auth-service -n psychology-app --tail=100
+
+          # Describe auth service pod
           kubectl describe pod -l app=auth-service -n psychology-app
-          kubectl get events -n psychology-app --sort-by='.lastTimestamp'
+
+          # Get events
+          kubectl get events -n psychology-app --sort-by='.metadata.creationTimestamp'
+
+          # Test service connectivity
+          kubectl run curl-test --image=curlimages/curl -n psychology-app \
+            --restart=Never \
+            --rm -i \
+            --command -- sh -c 'curl -v http://auth-service.psychology-app.svc.cluster.local:50051' || true
