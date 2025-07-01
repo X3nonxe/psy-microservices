@@ -21,7 +21,6 @@ import (
 )
 
 func main() {
-	// Load configuration
 	cfg := config.Load()
 	logger := logger.NewLogger("auth-service")
 	defer logger.Sync()
