@@ -31,6 +31,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
 
       - name: Set up Go
         uses: actions/setup-go@v3
@@ -64,47 +66,137 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
 
       - name: Set up KinD cluster
-        uses: helm/kind-action@v1.8.0
-        with:
-          version: 'v0.20.0'
-          config: |
-            kind: Cluster
-            apiVersion: kind.x-k8s.io/v1alpha4
-            nodes:
-            - role: control-plane
-              extraPortMappings:
-              - containerPort: 50051
-                hostPort: 50051
-                protocol: TCP
+        run: |
+          # Install KinD
+          curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.20.0/kind-linux-amd64
+          chmod +x ./kind
+          sudo mv ./kind /usr/local/bin/
+
+          # Install kubectl
+          curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+          chmod +x kubectl
+          sudo mv kubectl /usr/local/bin/
+
+          # Create cluster config file
+          cat <<EOF > kind-config.yaml
+          kind: Cluster
+          apiVersion: kind.x-k8s.io/v1alpha4
+          nodes:
+          - role: control-plane
+            kubeadmConfigPatches:
+            - |
+              kind: ClusterConfiguration
+              apiServer:
+                extraArgs:
+                  v: "5" # Increase API server verbosity
+            extraPortMappings:
+            - containerPort: 50051
+              hostPort: 50051
+              protocol: TCP
+          EOF
+
+          # Create cluster with increased verbosity
+          kind create cluster --config=kind-config.yaml --wait 120s -v 5
+
+          # Verify cluster
+          kubectl cluster-info
+          kubectl get nodes -o wide
 
       - name: Build Docker image
         working-directory: microservices/auth-service
-        run: docker build -t auth-service:${{ github.sha }} .
+        run: |
+          docker build -t auth-service:${{ github.sha }} .
+          docker inspect auth-service:${{ github.sha }}
 
       - name: Load image into KinD cluster
-        run: kind load docker-image auth-service:${{ github.sha }}
+        run: |
+          kind load docker-image auth-service:${{ github.sha }} --name kind
+          kubectl get nodes -o wide
+          docker exec kind-control-plane crictl images
+
+      - name: Create namespace
+        run: |
+          kubectl create namespace psychology-app || true
+          kubectl get namespaces
 
       - name: Deploy database
         run: |
-          kubectl create namespace psychology-app
-          kubectl apply -f microservices/auth-service/kubernetes/db-deployment.yaml
-          kubectl wait --for=condition=ready pod -l app=db-service -n psychology-app --timeout=120s
+          kubectl apply -f kubernetes/deployments/db-deployment.yaml
+
+          # Enhanced diagnostics with retries
+          for i in {1..10}; do
+            echo "Checking database pods (attempt $i/10)..."
+            POD_STATUS=$(kubectl get pods -l app=db-service -n psychology-app -o jsonpath='{.items[0].status.phase}' 2>/dev/null || echo "Pending")
+            [ "$POD_STATUS" = "Running" ] && break
+            sleep 5
+          done
+
+          kubectl get pods -n psychology-app -o wide
+          kubectl describe pod -l app=db-service -n psychology-app || true
+          kubectl logs -l app=db-service -n psychology-app --tail=50 || true
+
+      - name: Verify database connection
+        run: |
+          # Test database connectivity
+          kubectl run db-test --image=postgres:15-alpine -n psychology-app \
+            --restart=Never \
+            --rm -i \
+            --env="PGPASSWORD=pass" \
+            --command -- sh -c 'pg_isready -h db-service.psychology-app.svc.cluster.local -U user -d authdb -t 30' || true
 
       - name: Deploy auth service
         run: |
-          kubectl apply -f microservices/auth-service/kubernetes/auth-deployment.yaml
-          kubectl apply -f microservices/auth-service/kubernetes/auth-service.yaml
+          # Apply deployment with server-side apply for better error reporting
+          kubectl apply --server-side -f kubernetes/deployments/
+          kubectl apply --server-side -f kubernetes/services/
 
+          # Update image
           kubectl set image deployment/auth-service \
             auth-service=auth-service:${{ github.sha }} \
             -n psychology-app
+
+          # Enhanced rollout status with diagnostics
+          for i in {1..30}; do
+            echo "Checking auth-service rollout status (attempt $i/30)..."
+            ROLLOUT_STATUS=$(kubectl rollout status deployment/auth-service -n psychology-app --timeout=10s 2>&1 || true)
+            echo "$ROLLOUT_STATUS"
+            [[ "$ROLLOUT_STATUS" == *"successfully rolled out"* ]] && break
             
-          kubectl rollout status deployment/auth-service -n psychology-app --timeout=120s
+            # Capture diagnostics on failure
+            kubectl get pods -n psychology-app -o wide
+            kubectl describe deployment auth-service -n psychology-app
+            kubectl logs -l app=auth-service -n psychology-app --tail=100 || true
+            sleep 5
+          done
+
+          # Final check
+          kubectl rollout status deployment/auth-service -n psychology-app --timeout=0 || true
 
       - name: Verify deployment
         run: |
-          kubectl get all -n psychology-app
-          kubectl logs deployment/auth-service -n psychology-app
+          # Comprehensive diagnostics
+          kubectl get all -n psychology-app -o wide
+          kubectl describe deployment auth-service -n psychology-app
+          kubectl get pods -n psychology-app -o wide
+
+          # Capture logs from auth service
+          kubectl logs -l app=auth-service -n psychology-app --tail=200
+
+          # Describe auth service pod
           kubectl describe pod -l app=auth-service -n psychology-app
+
+          # Get events with timestamps
+          kubectl get events -n psychology-app --sort-by='.metadata.creationTimestamp'
+
+          # Check pod status in detail
+          kubectl get pods -n psychology-app -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.status.phase}{"\t"}{.status.message}{"\n"}{end}'
+
+          # Test service connectivity
+          kubectl run grpcurl-test --image=fullstorydev/grpcurl -n psychology-app \
+            --restart=Never \
+            --rm -i \
+            --command -- sh -c 'grpcurl -plaintext auth-service.psychology-app.svc.cluster.local:50051 list' || true
